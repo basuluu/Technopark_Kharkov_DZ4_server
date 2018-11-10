@@ -91,6 +91,8 @@ class TaskQueueServer:
                     if time.time() > float(task[3]):
                         heapq.heappush(self.heap[que], task[:-1])
                         self.buff_heap[que].remove(task)
+                    else:
+                        break
 
     def save(self, conn):
         with open((self.path + 'heap'), 'wb') as f:
