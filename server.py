@@ -3,6 +3,7 @@ import socket
 import heapq
 import time
 import pickle
+import uuid
 
 class TaskQueueServer:
     def __init__(self, ip, port, path, timeout):
@@ -10,17 +11,22 @@ class TaskQueueServer:
         self.port = port
         self.path = path
         self.timeout = timeout
-        self.heap, self.buff_heap = self.load('heap'), self.load('heap_buff')
+        self.heap, self.buff_heap = self.load('heap')
 
     def load(self, name):
         try:
+            heap = ({},{})
             with open((self.path + name), 'rb') as f:
                 heap = pickle.load(f)
             f.close()
-        except:
-            heap = {}
+        except IOError:
+            self.sock.close()
+            raise IOError
+        except PermissionError:
+            self.sock.close()
+            raise PermissionEror
         finally:
-            return heap
+            return heap[0], heap[1]
 
     def run(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -36,7 +42,7 @@ class TaskQueueServer:
                 break
 
     def gen_uniq_id(self):
-        return time.time()
+        return uuid.uuid1()
 
     def add_action(self, data, conn):
         if data[1] not in self.heap:
@@ -88,10 +94,7 @@ class TaskQueueServer:
 
     def save(self, conn):
         with open((self.path + 'heap'), 'wb') as f:
-            pickle.dump(self.heap, f)
-        f.close()
-        with open((self.path + 'heap_buff'), 'wb') as f:
-            pickle.dump(self.buff_heap, f)
+            pickle.dump((self.heap, self.buff_heap), f)
         f.close()
         conn.send(b'OK')
     
