@@ -11,22 +11,7 @@ class TaskQueueServer:
         self.port = port
         self.path = path
         self.timeout = timeout
-        self.heap, self.buff_heap = self.load('heap')
-
-    def load(self, name):
-        try:
-            heap = ({},{})
-            with open((self.path + name), 'rb') as f:
-                heap = pickle.load(f)
-            f.close()
-        except IOError:
-            self.sock.close()
-            raise IOError
-        except PermissionError:
-            self.sock.close()
-            raise PermissionEror
-        finally:
-            return heap[0], heap[1]
+        self.storage = Storage()
 
     def run(self):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -45,59 +30,31 @@ class TaskQueueServer:
         return uuid.uuid1()
 
     def add_action(self, data, conn):
-        if data[1] not in self.heap:
-            self.heap[data[1]] = []
         uniq_id = str(self.gen_uniq_id())
-        heapq.heappush(self.heap[data[1]], [uniq_id, data[2], data[3]])
+        self.storage.add_task(data, uniq_id)
         conn.send(bytes(uniq_id, 'utf-8'))
 
     def get_action(self, data, conn):
-        if data[1] not in self.heap or len(self.heap[data[1]]) == 0:
-            conn.send(b'NONE')
-            return
+        task = self.storage.get_task(data, self.timeout)
+        if task:
+            conn.send(bytes("{} {} {}".format(task[1], task[2], task[3]), 'utf-8'))
         else:
-            que = heapq.heappop(self.heap[data[1]])
-            que.append(time.time() + float(self.timeout))
-            if data[1] not in self.buff_heap.keys():
-                self.buff_heap[data[1]] = []
-            heapq.heappush(self.buff_heap[data[1]], que)
-            conn.send(bytes("{} {} {}".format(que[0], que[1], que[2]), 'utf-8'))
-
-    def search_task(self, data, heap):
-        if data[1] in heap.keys():
-            for task in heap.get(data[1]):
-                if data[2] in task:
-                    return task
-        return False
+            conn.send(b'NONE')
 
     def ack_action(self, data, conn):
-        task = self.search_task(data, self.buff_heap)
-        if task:
-            self.buff_heap[data[1]].remove(task)
+        if self.storage.ack_task(data):
             conn.send(b'YES')
         else:
             conn.send(b'NO')
 
     def in_action(self, data, conn):
-        if self.search_task(data, self.heap) or self.search_task(data, self.buff_heap):
+        if self.storage.in_heap(data):
             conn.send(b'YES')
         else:
             conn.send(b'NO')  
 
-    def check(self, buff_heap):
-        for que, tasks in buff_heap.items():
-            if tasks != None:
-                for task in tasks:
-                    if time.time() > float(task[3]):
-                        heapq.heappush(self.heap[que], task[:-1])
-                        self.buff_heap[que].remove(task)
-                    else:
-                        break
-
     def save(self, conn):
-        with open((self.path + 'heap'), 'wb') as f:
-            pickle.dump((self.heap, self.buff_heap), f)
-        f.close()
+        self.storage.save(self.path)
         conn.send(b'OK')
     
     def work_with_req(self, data, conn):
@@ -128,7 +85,7 @@ class TaskQueueServer:
                 break
         data = tmp.decode("utf-8")
         data = data.split()
-        self.check(self.buff_heap)
+        self.storage.update()
         self.work_with_req(data, conn)
 
 def parse_args():
@@ -162,6 +119,78 @@ def parse_args():
         default=4,
         help='Task maximum GET timeout in seconds')
     return parser.parse_args()
+
+
+class Storage():
+    def __init__(self):
+        self.heap, self.buff_heap = self.load('heap')
+        
+    def load(self, name):
+        heap = ({}, {})
+        try:
+            with open((self.path + name), 'rb') as f:
+                heap = pickle.load(f)
+            f.close()
+        except IOError:
+            raise IOError
+        except PermissionError:
+            raise PermissionEror
+        finally:
+            return heap         
+
+    def gen_time(self):
+        return time.time()
+
+    def add_task(self, data, uniq_id):
+        if data[1] not in self.heap:
+            self.heap[data[1]] = []
+        heapq.heappush(self.heap[data[1]], [self.gen_time(), uniq_id, data[2], data[3]])
+        
+    def get_task(self, data, timeout):
+        if data[1] not in self.heap or len(self.heap[data[1]]) == 0:
+            return False
+        else:
+            task = heapq.heappop(self.heap[data[1]])
+            task.append(self.gen_time() + float(timeout))
+            if data[1] not in self.buff_heap.keys():
+                self.buff_heap[data[1]] = []
+            heapq.heappush(self.buff_heap[data[1]], task)
+            return task
+
+    def search_task(self, data, heap):
+        if data[1] in heap.keys():
+            for task in heap.get(data[1]):
+                if data[2] in task:
+                    return task
+        return False
+
+    def ack_task(self, data):
+        task = self.search_task(data, self.buff_heap)
+        if task:
+            self.buff_heap[data[1]].remove(task)
+            return True
+        return False
+
+    def in_heap(self, data):
+        if self.search_task(data, self.heap) or self.search_task(data, self.buff_heap):
+            return True
+        return False
+
+    def update(self):
+        for que, tasks in self.buff_heap.items():
+            if tasks != None:
+                for task in tasks:
+                    if time.time() > float(task[4]):
+                        heapq.heappush(self.heap[que], task[:-1])
+                        self.buff_heap[que].remove(task)
+                    else:
+                        break
+
+    def save(self, path):
+        with open((path + 'heap'), 'wb') as f:
+            pickle.dump((self.heap, self.buff_heap), f)
+        f.close()
+
 
 if __name__ == '__main__':
     args = parse_args()
